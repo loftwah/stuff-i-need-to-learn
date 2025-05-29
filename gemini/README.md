@@ -166,11 +166,99 @@ result = GEMINI_CLIENT.generate_content({
 })
 ```
 
-## Working with JSON Schemas - TechDeck Examples
+## JSON Format Responses
 
-### System Instructions + JSON Schema Pattern
+_As of the writing of this README, only the `vertex-ai-api` service and `gemini` models version `1.5` support this feature._
 
-The most powerful pattern combines system instructions with structured JSON output:
+The Gemini API provides a configuration parameter to request a response in JSON format:
+
+```ruby
+require 'json'
+
+result = GEMINI_CLIENT.stream_generate_content({
+  contents: {
+    role: 'user',
+    parts: {
+      text: 'List 3 random colors.'
+    }
+  },
+  generation_config: {
+    response_mime_type: 'application/json'
+  }
+})
+
+json_string = result
+              .map { |response| response.dig('candidates', 0, 'content', 'parts') }
+              .map { |parts| parts.map { |part| part['text'] }.join }
+              .join
+
+puts JSON.parse(json_string).inspect
+```
+
+Output:
+
+```ruby
+{ 'colors' => ['Dark Salmon', 'Indigo', 'Lavender'] }
+```
+
+## JSON Schema
+
+_While Gemini 1.5 Flash models only accept a text description of the JSON schema you want returned, the Gemini 1.5 Pro models let you pass a schema object (or a Python type equivalent), and the model output will strictly follow that schema. This is also known as controlled generation or constrained decoding._
+
+You can also provide a JSON Schema for the expected JSON output:
+
+```ruby
+require 'json'
+
+result = GEMINI_CLIENT.stream_generate_content({
+  contents: {
+    role: 'user',
+    parts: {
+      text: 'List 3 random colors.'
+    }
+  },
+  generation_config: {
+    response_mime_type: 'application/json',
+    response_schema: {
+      type: 'object',
+      properties: {
+        colors: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string'
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+})
+
+json_string = result
+              .map { |response| response.dig('candidates', 0, 'content', 'parts') }
+              .map { |parts| parts.map { |part| part['text'] }.join }
+              .join
+
+puts JSON.parse(json_string).inspect
+```
+
+Output:
+
+```ruby
+{ 'colors' => [
+  { 'name' => 'Lavender Blush' },
+  { 'name' => 'Medium Turquoise' },
+  { 'name' => 'Dark Slate Gray' }
+] }
+```
+
+## TechDeck Examples
+
+### User Card Generation with System Instructions + JSON Schema
 
 ```ruby
 # Build system instruction
@@ -259,20 +347,50 @@ user_card_schema = {
 }
 
 # Make request with system instruction and schema
-result = GEMINI_CLIENT.generate_content({
-  system_instruction: system_instruction,
-  contents: {
-    role: 'user',
-    parts: { text: build_user_prompt(user, tweets) }
-  },
-  generation_config: {
-    response_mime_type: 'application/json',
-    response_schema: user_card_schema
-  }
-})
+def generate_user_card(user, tweets)
+  tweet_sample = tweets.limit(10).pluck(:text).join(' | ')
+
+  prompt = <<~PROMPT
+    Create a tech trading card profile for #{user.name} (@#{user.handle}).
+
+    PROFILE DATA:
+    - Bio: #{user.bio}
+    - Location: #{user.location}
+    - Followers: #{user.followers}
+    - Following: #{user.following}
+    - Verified: #{user.verified?}
+    - Recent content: #{tweet_sample.truncate(600)}
+
+    CRITICAL REQUIREMENTS:
+    - Character limits are STRICT
+    - Third-person perspective for bios
+    - Tags must be single words, lowercase
+    - Content should be professional yet engaging
+    - Reflect their actual expertise and personality
+  PROMPT
+
+  result = GEMINI_CLIENT.stream_generate_content({
+    system_instruction: system_instruction,
+    contents: {
+      role: 'user',
+      parts: { text: prompt }
+    },
+    generation_config: {
+      response_mime_type: 'application/json',
+      response_schema: user_card_schema
+    }
+  })
+
+  json_string = result
+                .map { |response| response.dig('candidates', 0, 'content', 'parts') }
+                .map { |parts| parts.map { |part| part['text'] }.join }
+                .join
+
+  JSON.parse(json_string)
+end
 ```
 
-### Schema Validation Patterns
+### Schema Validation Helper
 
 ```ruby
 # Helper to validate response against schema
@@ -306,9 +424,7 @@ end
 
 ## Rails Console Workflows
 
-### Working with Your TechDeck Models
-
-#### Basic User Analysis
+### Working with TechDeck Models
 
 ```ruby
 # Start Rails console
@@ -337,7 +453,7 @@ result = GEMINI_CLIENT.generate_content(
 puts result.dig('candidates', 0, 'content', 'parts', 0, 'text')
 ```
 
-#### Generate Card Stats with AI Input
+### Generate Card Stats with AI Input
 
 ```ruby
 # Get AI suggestions for card attributes
@@ -369,7 +485,7 @@ stats = stats_service.generate_stats
 pp stats
 ```
 
-#### Test Your AiGenerationService
+### Test Your AiGenerationService
 
 ```ruby
 # Test the existing service
@@ -392,7 +508,7 @@ puts "Tags: #{user.tags.pluck(:name)}"
 puts "Buff: #{user.buff} - #{user.buff_description}"
 ```
 
-#### Custom JSON Schema Testing
+### Custom JSON Schema Testing
 
 ```ruby
 # Define a simple schema for tweet analysis
@@ -425,7 +541,7 @@ tweet_analysis_schema = {
 user = User.find_by(handle: 'loftwah')
 recent_tweets = user.tweets.limit(5).pluck(:text)
 
-result = GEMINI_CLIENT.generate_content({
+result = GEMINI_CLIENT.stream_generate_content({
   contents: {
     role: 'user',
     parts: {
@@ -438,11 +554,16 @@ result = GEMINI_CLIENT.generate_content({
   }
 })
 
-analysis = JSON.parse(result.dig('candidates', 0, 'content', 'parts', 0, 'text'))
+json_string = result
+              .map { |response| response.dig('candidates', 0, 'content', 'parts') }
+              .map { |parts| parts.map { |part| part['text'] }.join }
+              .join
+
+analysis = JSON.parse(json_string)
 pp analysis
 ```
 
-#### Batch User Processing
+### Batch User Processing
 
 ```ruby
 # Process multiple users with different prompts
@@ -480,9 +601,7 @@ end
 pp results
 ```
 
-### Working with Different Data Formats
-
-#### Convert Database Records for Gemini
+### Data Format Conversions
 
 ```ruby
 # Get user data in different formats
@@ -528,7 +647,7 @@ puts "\nCSV format:"
 puts csv_data
 ```
 
-#### System Instructions with Context
+### System Instructions with Context
 
 ```ruby
 # Create context-aware system instructions
@@ -587,7 +706,7 @@ puts "\nFlavor text:"
 puts content_result.dig('candidates', 0, 'content', 'parts', 0, 'text')
 ```
 
-### Image Analysis
+## Image Analysis
 
 ```ruby
 require 'base64'
@@ -611,7 +730,12 @@ result = GEMINI_CLIENT.stream_generate_content({
   }]
 })
 
-puts result.dig(0, 'candidates', 0, 'content', 'parts', 0, 'text')
+json_string = result
+              .map { |response| response.dig('candidates', 0, 'content', 'parts') }
+              .map { |parts| parts.map { |part| part['text'] }.join }
+              .join
+
+puts json_string
 ```
 
 ### MIME Type Detection
@@ -703,83 +827,6 @@ class GeminiChatService
 end
 ```
 
-## Rails Console Examples
-
-### Basic Experimentation
-
-```ruby
-# Start Rails console
-bin/rails console
-
-# Simple query
-result = GEMINI_CLIENT.generate_content(
-  contents: { role: 'user', parts: { text: 'What is Ruby?' } }
-)
-puts result.dig('candidates', 0, 'content', 'parts', 0, 'text')
-
-# Check token usage
-puts result.dig('usageMetadata')
-# => {"promptTokenCount"=>4, "candidatesTokenCount"=>45, "totalTokenCount"=>49}
-```
-
-### Working with Rails Data
-
-```ruby
-# Analyze a User model
-user = User.first
-user_data = user.attributes.slice('name', 'email', 'created_at', 'updated_at')
-
-prompt = "Analyze this user data and provide insights: #{user_data.to_json}"
-result = GEMINI_CLIENT.generate_content(
-  contents: { role: 'user', parts: { text: prompt } }
-)
-puts result.dig('candidates', 0, 'content', 'parts', 0, 'text')
-```
-
-### Data Format Conversions
-
-```ruby
-# JSON to different formats
-data = { name: 'Dean', role: 'Developer', skills: ['Ruby', 'Rails', 'AI'] }
-
-# For Gemini (JSON string)
-json_for_gemini = data.to_json
-puts json_for_gemini
-
-# Pretty JSON for debugging
-puts JSON.pretty_generate(data)
-
-# YAML format
-puts data.to_yaml
-
-# Single line JSON for .env
-puts JSON.generate(data)
-
-# Using jq command for conversion
-# jq -c '.' file.json    # Compact
-# jq '.' file.json       # Pretty
-```
-
-### File Processing Examples
-
-```ruby
-# Load and analyze different file types
-csv_data = CSV.read('data.csv', headers: true).map(&:to_h)
-json_data = JSON.parse(File.read('data.json'))
-yaml_data = YAML.load_file('config.yml')
-
-# Send to Gemini for analysis
-[csv_data, json_data, yaml_data].each_with_index do |data, index|
-  prompt = "Analyze this data structure and explain what it represents: #{data.to_json}"
-  result = GEMINI_CLIENT.generate_content(
-    contents: { role: 'user', parts: { text: prompt } }
-  )
-  puts "Analysis #{index + 1}:"
-  puts result.dig('candidates', 0, 'content', 'parts', 0, 'text')
-  puts "-" * 50
-end
-```
-
 ## Function Calling (Tools)
 
 ### Define Functions
@@ -825,17 +872,20 @@ result = GEMINI_CLIENT.stream_generate_content({
 })
 
 # Check for function calls
-function_calls = result.dig(0, 'candidates', 0, 'content', 'parts')
-                       .select { |part| part.key?('functionCall') }
+result.each do |response|
+  parts = response.dig('candidates', 0, 'content', 'parts') || []
 
-function_calls.each do |call|
-  function_name = call.dig('functionCall', 'name')
-  args = call.dig('functionCall', 'args')
+  parts.each do |part|
+    if part.key?('functionCall')
+      function_name = part.dig('functionCall', 'name')
+      args = part.dig('functionCall', 'args')
 
-  case function_name
-  when 'get_user_count'
-    count = args['active_only'] ? User.active.count : User.count
-    # Return result back to Gemini...
+      case function_name
+      when 'get_user_count'
+        count = args['active_only'] ? User.active.count : User.count
+        # Return result back to Gemini...
+      end
+    end
   end
 end
 ```
@@ -854,23 +904,14 @@ def safe_gemini_request(prompt, max_retries: 3)
     GEMINI_CLIENT.generate_content(
       contents: { role: 'user', parts: { text: prompt } }
     )
-  rescue GeminiError => e
+  rescue => e
     retries += 1
 
-    case e
-    when Gemini::Errors::RequestError
-      if e.message.include?('quota') && retries <= max_retries
-        sleep(2 ** retries) # Exponential backoff
-        retry
-      else
-        Rails.logger.error "Gemini API Error: #{e.message}"
-        raise
-      end
-    when Gemini::Errors::MissingProjectIdError
-      Rails.logger.error "Missing Project ID in Gemini configuration"
-      raise
+    if retries <= max_retries
+      sleep(2 ** retries) # Exponential backoff
+      retry
     else
-      Rails.logger.error "Unexpected Gemini Error: #{e.class} - #{e.message}"
+      Rails.logger.error "Gemini API Error: #{e.message}"
       raise
     end
   end
